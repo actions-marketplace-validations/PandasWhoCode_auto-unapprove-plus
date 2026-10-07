@@ -92,7 +92,7 @@ node auto-unapprove.js
 ![Action Flow](images/action-flow.png)
 
 1. **Get all changed files** from the entire PR (not just latest commit)
-2. **Parse CODEOWNERS** from the PR target branch (not default branch) using hierarchical path matching (most specific wins), expanding any `%team` organization placeholder
+2. **Parse CODEOWNERS** from the PR target branch (not default branch) resolving owners the same way codeowners-plus does (see [Owner Resolution](#owner-resolution)), expanding any `%team` organization placeholder
 3. **Check team memberships** via GitHub API for relevant teams only
 4. **Analyze approval timeline** - detect commits made after approval
 5. **Smart dismissal logic**:
@@ -153,7 +153,7 @@ _For more workflow examples, see [`example-workflow.yml`](./example-workflow.yml
 - ✅ **Team support**: Full GitHub team membership validation via API
 - ✅ **Organization placeholder**: Write `%team` to share one CODEOWNERS file across multiple organizations
 - ✅ **Timeline analysis**: Compares approval timestamps with commit timestamps
-- ✅ **Hierarchical CODEOWNERS**: Proper path matching with most-specific-wins logic
+- ✅ **codeowners-plus compatible matching**: Same glob syntax and rule precedence as codeowners-plus
 - ✅ **Performance optimized**: Parallel API calls and efficient team checking
 - ✅ **Comprehensive logging**: Detailed reasoning for every dismissal decision
 - ✅ **Dry-run mode**: Safe testing without actual dismissals
@@ -235,14 +235,40 @@ The default ownership file is `.codeowners` at the repository root, so the same
 file can be shared with [codeowners-plus](https://github.com/PandasWhoCode/codeowners-plus).
 Its rule prefixes are understood:
 
-- `&` (additional required reviewer): the prefix is removed and the owners are
-  treated as code owners, so their approvals are dismissed like any other owner's.
+- `&` (additional required reviewer): the owners are added to the file's
+  primary owner, so their approvals are dismissed like any other owner's.
 - `?` (optional reviewer): the line is skipped, because an optional reviewer is
   never a required approval.
 - Inline comments (`* %team # why`) are stripped.
 
 Only the root file named by `code-owners-file` is read; per-directory
 `.codeowners` files are not.
+
+### Owner Resolution
+
+Owners are resolved the same way codeowners-plus resolves them for a root
+`.codeowners` file:
+
+- Paths are relative to the repository root. A leading `/` is ignored and a
+  trailing `/` is treated as `/**`.
+- Patterns use [doublestar](https://github.com/bmatcuk/doublestar#patterns)
+  syntax: `*` and `?` never match `/`, `**` as a whole path segment matches
+  zero or more directories, and `[a-z]`, `[!a-z]`, `{a,b}` and `\` escapes are
+  supported.
+- A file has one primary owner. Rules are tried in order of type (literal
+  paths, then patterns with `*`, then patterns with `**/` or `/**`) and, within
+  a type, last declared first; the first match wins. A bare `*` rule is the
+  fallback used only when no other rule matches.
+- Every matching `&` rule adds its owners on top of the primary owner.
+
+For example, with
+
+```
+/platform-sdk/              %consensus %foundation
+/platform-sdk/consensus-*/  %consensus
+```
+
+`platform-sdk/consensus-model/A.java` is owned only by `%consensus`.
 
 ## 🔧 **Inputs & Environment Variables**
 

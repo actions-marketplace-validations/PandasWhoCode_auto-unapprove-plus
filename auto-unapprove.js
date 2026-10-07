@@ -526,11 +526,14 @@ function parseCodeowners(content, org = owner) {
     let trimmed = line.split("#")[0].trim();
     // codeowners-plus rule prefixes: "&" (an additional required reviewer) is
     // still an owner whose approval must be dismissed, while "?" (an optional
-    // reviewer) is never a required approval, so it is skipped.
+    // reviewer) is never a required approval, so it is skipped. "&" rules are
+    // flagged because they add to the primary owner instead of competing with
+    // it (see getFileOwnersHierarchical).
     if (trimmed.startsWith("?")) {
       return;
     }
-    if (trimmed.startsWith("&")) {
+    const additional = trimmed.startsWith("&");
+    if (additional) {
       trimmed = trimmed.slice(1).trim();
     }
     if (trimmed) {
@@ -543,7 +546,7 @@ function parseCodeowners(content, org = owner) {
         const ownersList = parts
           .slice(1)
           .map((name) => expandOrgPlaceholder(name, org));
-        owners.push({ path, owners: ownersList });
+        owners.push({ path, owners: ownersList, additional });
       }
     }
   });
@@ -551,52 +554,195 @@ function parseCodeowners(content, org = owner) {
   return owners;
 }
 
+/**
+ * Resolve the owners of a file the way codeowners-plus does for a single root
+ * `.codeowners` file (pkg/codeowners in codeowners-plus):
+ *
+ * - The primary owner is the first matching rule after ordering the rules by
+ *   type (literal, then wildcard, then globstar) and, within a type, by last
+ *   declaration first. A bare `*` rule is only a fallback used when nothing
+ *   else matches.
+ * - Every matching `&` rule adds its owners on top of the primary owner.
+ */
 function getFileOwnersHierarchical(filename, codeowners) {
-  const normalizedFile = filename.startsWith("/") ? filename : "/" + filename;
+  const file = filename.startsWith("/") ? filename.slice(1) : filename;
 
-  let bestMatch = null;
-  let bestMatchLength = -1;
+  let fallback = null;
+  const ownerRules = [];
+  const additionalOwners = [];
 
-  codeowners.forEach((entry) => {
-    if (pathMatches(normalizedFile, entry.path)) {
-      const pathLength = entry.path.length;
-      if (pathLength > bestMatchLength) {
-        bestMatch = entry;
-        bestMatchLength = pathLength;
+  codeowners.forEach((entry, index) => {
+    let match = toCodeownersPattern(entry.path);
+    if (match === "*") {
+      if (!entry.additional) {
+        // The last fallback declared wins, as in codeowners-plus.
+        fallback = entry;
+        return;
       }
+      match = "**/*";
+    }
+
+    if (entry.additional) {
+      if (globMatches(match, file)) {
+        additionalOwners.push(...entry.owners);
+      }
+    } else {
+      ownerRules.push({ match, entry, index });
     }
   });
 
-  return bestMatch ? bestMatch.owners : [];
+  ownerRules.sort(
+    (a, b) => ruleTier(a.match) - ruleTier(b.match) || b.index - a.index,
+  );
+  const primary =
+    ownerRules.find((rule) => globMatches(rule.match, file))?.entry || fallback;
+
+  return [
+    ...new Set([...(primary ? primary.owners : []), ...additionalOwners]),
+  ];
 }
 
-function pathMatches(filename, pattern) {
-  const normalizedFile = filename.startsWith("/") ? filename : "/" + filename;
-  const normalizedPattern = pattern.startsWith("/") ? pattern : "/" + pattern;
+/**
+ * Normalize a rule path like codeowners-plus does: rules are relative to the
+ * repository root, so a leading `/` is dropped, and a trailing `/` (a GitHub
+ * CODEOWNERS directory rule) becomes `/**`.
+ */
+function toCodeownersPattern(path) {
+  let match = path.startsWith("/") ? path.slice(1) : path;
+  if (match.endsWith("/")) {
+    match += "**";
+  }
+  return match;
+}
 
-  if (pattern === "*") return true;
-  if (normalizedPattern === normalizedFile) return true;
+/**
+ * Rule specificity used to order primary owner rules: 0 for literal paths, 1
+ * for wildcards and 2 for globstars. Mirrors FileTestCases.Less in
+ * codeowners-plus, which inspects the pattern text rather than its meaning.
+ */
+function ruleTier(match) {
+  if (match.includes("**/") || match.includes("/**")) {
+    return 2;
+  }
+  return match.includes("*") ? 1 : 0;
+}
 
-  // Handle directory patterns (ending with /)
-  if (pattern.endsWith("/")) {
-    const dirPattern = pattern.startsWith("/") ? pattern : "/" + pattern;
-    return normalizedFile.startsWith(dirPattern);
+const globCache = new Map();
+
+/**
+ * Test a repository-relative path against a doublestar glob, the matcher used
+ * by codeowners-plus (github.com/bmatcuk/doublestar). An invalid pattern never
+ * matches.
+ */
+function globMatches(pattern, file) {
+  if (!globCache.has(pattern)) {
+    globCache.set(pattern, globToRegExp(pattern));
+  }
+  const regex = globCache.get(pattern);
+  return regex !== null && regex.test(file);
+}
+
+/**
+ * Compile a doublestar glob to an anchored RegExp, or null if it is invalid.
+ *
+ * - `*` matches any run of characters except `/`; `**` does the same unless it
+ *   is a whole path segment, where it matches zero or more directories.
+ * - `?` matches one character except `/`.
+ * - `[abc]`, `[a-z]` and `[!abc]` / `[^abc]` are character classes.
+ * - `{a,b}` matches either alternative.
+ * - `\` escapes the next character.
+ */
+function globToRegExp(pattern) {
+  let regex = "";
+  let braceDepth = 0;
+
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+
+    if (c === "\\") {
+      i++;
+      if (i === pattern.length) {
+        return null;
+      }
+      regex += escapeRegExp(pattern[i]);
+    } else if (c === "*") {
+      let end = i;
+      while (pattern[end + 1] === "*") {
+        end++;
+      }
+      const startsSegment = i === 0 || pattern[i - 1] === "/";
+      const endsSegment =
+        end + 1 === pattern.length || pattern[end + 1] === "/";
+      if (end > i && startsSegment && endsSegment) {
+        if (end + 1 === pattern.length) {
+          // A trailing "**" matches everything below the directory, and
+          // "dir/**" also matches "dir" itself.
+          regex = i === 0 ? ".*" : regex.slice(0, -1) + "(?:/.*)?";
+        } else if (end + 2 === pattern.length && i > 0) {
+          // A trailing "dir/**/" only matches "dir" and directories below it.
+          regex = regex.slice(0, -1) + "(?:/(?:.*/)?)?";
+          end++;
+        } else {
+          // "**/" matches zero or more directories; consume its "/".
+          regex += "(?:.*/)?";
+          end++;
+        }
+      } else {
+        regex += "[^/]*";
+      }
+      i = end;
+    } else if (c === "?") {
+      regex += "[^/]";
+    } else if (c === "[") {
+      const close = findClassEnd(pattern, i);
+      if (close === -1) {
+        return null;
+      }
+      let body = pattern.slice(i + 1, close);
+      const negated = body.startsWith("!") || body.startsWith("^");
+      if (negated) {
+        body = body.slice(1);
+      }
+      if (body === "") {
+        return null;
+      }
+      body = body.replace(/\\(.)/g, "$1").replace(/[\\\]^]/g, "\\$&");
+      regex += negated ? `[^${body}]` : `[${body}]`;
+      i = close;
+    } else if (c === "{") {
+      braceDepth++;
+      regex += "(?:";
+    } else if (c === "}" && braceDepth > 0) {
+      braceDepth--;
+      regex += ")";
+    } else if (c === "," && braceDepth > 0) {
+      regex += "|";
+    } else {
+      regex += escapeRegExp(c);
+    }
   }
 
-  // Handle wildcard patterns
-  if (pattern.includes("*")) {
-    const regex = normalizedPattern.replace(/\*/g, ".*").replace(/\//g, "\\/");
-    return new RegExp(`^${regex}$`).test(normalizedFile);
-  }
+  return braceDepth === 0 ? new RegExp(`^${regex}$`) : null;
+}
 
-  // Handle file/directory without trailing slash
-  const filePattern = normalizedPattern.endsWith("/")
-    ? normalizedPattern
-    : normalizedPattern + "/";
-  return (
-    normalizedFile.startsWith(filePattern) ||
-    normalizedFile === normalizedPattern
-  );
+/** Index of the "]" closing the class opened at `start`, or -1. */
+function findClassEnd(pattern, start) {
+  let i = start + 1;
+  if (pattern[i] === "!" || pattern[i] === "^") {
+    i++;
+  }
+  for (; i < pattern.length; i++) {
+    if (pattern[i] === "\\") {
+      i++;
+    } else if (pattern[i] === "]") {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function getRelevantTeams(fileOwnersMap) {
@@ -676,5 +822,6 @@ module.exports = {
   expandOrgPlaceholder,
   parseCodeowners,
   getFileOwnersHierarchical,
+  globMatches,
   teamStartWith: team_start_with,
 };
