@@ -5,6 +5,8 @@
  * This script helps verify that the pagination functions work correctly
  */
 
+const { check, finish } = require("./check.js");
+
 // Test the pagination functions without making actual API calls
 function testPaginationLogic() {
   console.log("🧪 Testing pagination logic...\n");
@@ -70,10 +72,12 @@ function testPaginationLogic() {
       page++;
     }
 
-    const success = allFiles.length === testCase.expected;
-    console.log(
-      `   ✅ Result: ${allFiles.length} files (expected: ${testCase.expected}) - ${success ? "PASS" : "FAIL"}\n`,
+    check(
+      `collects ${testCase.expected} files`,
+      allFiles.length,
+      testCase.expected,
     );
+    console.log("");
   });
 }
 
@@ -133,13 +137,12 @@ function showRealTestInstructions() {
 
 // Run tests
 console.log("🧪 PAGINATION TEST SUITE\n");
-console.log("=" * 50 + "\n");
+console.log("=".repeat(50) + "\n");
 
 testPaginationLogic();
 testUrlConstruction();
 showRealTestInstructions();
-
-console.log("✅ Test suite completed!");
 console.log(
-  "\n💡 Tip: The best way to test is with a real PR that has many changed files.",
+  "\n💡 Tip: The best way to test is with a real PR that has many changed files.\n",
 );
+finish("✅ All pagination logic tests passed!");

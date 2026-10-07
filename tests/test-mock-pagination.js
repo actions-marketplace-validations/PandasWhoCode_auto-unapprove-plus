@@ -97,6 +97,8 @@ global.fetch = async (url) => {
   };
 };
 
+const { check, finish } = require("./check.js");
+
 // Import the functions from the main script
 const {
   getAllChangedFiles,
@@ -119,13 +121,13 @@ async function runMockTests() {
   try {
     console.log("📁 Testing getAllChangedFiles...");
     const files = await getAllChangedFiles(headers);
-    console.log(`   ✅ Retrieved ${files.length} files`);
+    check("retrieves files from every page", files.length, 175);
     console.log(`   📄 Sample files: ${files.slice(0, 3).join(", ")}...`);
     console.log("");
 
     console.log("📋 Testing getAllReviews...");
     const reviews = await getAllReviews(headers);
-    console.log(`   ✅ Retrieved ${reviews.length} reviews`);
+    check("retrieves every review", reviews.length, 2);
     console.log(
       `   👥 Reviewers: ${reviews.map((r) => r.user.login).join(", ")}`,
     );
@@ -133,19 +135,20 @@ async function runMockTests() {
 
     console.log("📝 Testing getAllCommits...");
     const commits = await getAllCommits(headers);
-    console.log(`   ✅ Retrieved ${commits.length} commits`);
+    check("retrieves every commit", commits.length, 2);
     console.log(
       `   👤 Authors: ${commits.map((c) => c.author.login).join(", ")}`,
     );
     console.log("");
 
-    console.log("🎉 All mock tests passed!");
+    console.log("💡 Test with real data using the test script.");
     console.log("");
-    console.log("💡 This confirms the pagination logic works correctly.");
-    console.log("   Now you can test with real data using the test script.");
   } catch (error) {
     console.error("❌ Mock test failed:", error.message);
+    process.exit(1);
   }
+
+  finish("🎉 All mock tests passed!");
 }
 
 // Run the tests

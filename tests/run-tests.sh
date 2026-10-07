@@ -12,12 +12,12 @@ cd "$(dirname "$0")" || exit 1
 
 echo "1. Running logic tests..."
 echo "   Testing pagination logic with simulated data..."
-node test-pagination.js
+node test-pagination.js || exit 1
 echo ""
 
 echo "2. Running mock API tests..."
 echo "   Testing with mock GitHub API responses..."
-node test-mock-pagination.js
+node test-mock-pagination.js || exit 1
 echo ""
 
 echo "3. Running org placeholder tests..."

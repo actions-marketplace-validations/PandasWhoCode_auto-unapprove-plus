@@ -302,8 +302,11 @@ The project includes comprehensive tests for the pagination implementation:
 
 ### **Quick Test** (No API calls needed):
 ```bash
-./tests/run-tests.sh
+npm test   # or ./tests/run-tests.sh
 ```
+
+These tests run automatically on every pull request and push to `main` via the
+`CI Tests` workflow (`.github/workflows/ci-tests.yaml`).
 
 ### **Test with Real Data**:
 ```bash
